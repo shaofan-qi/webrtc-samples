@@ -60,7 +60,7 @@ async function start() {
   console.log('Requesting local stream');
   startButton.disabled = true;
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({audio: true, video: true});
+    const stream = await navigator.mediaDevices.getUserMedia({audio: false, video: {width: 1280, height: 720, frameRate: 30}});
     console.log('Received local stream');
     localVideo.srcObject = stream;
     localStream = stream;
@@ -101,6 +101,7 @@ async function call() {
   try {
     console.log('pc1 createOffer start');
     const offer = await pc1.createOffer(offerOptions);
+    console.log(`Offer from pc1\n${offer.sdp}`);
     await onCreateOfferSuccess(offer);
   } catch (e) {
     onCreateSessionDescriptionError(e);
@@ -112,21 +113,26 @@ function onCreateSessionDescriptionError(error) {
 }
 
 async function onCreateOfferSuccess(desc) {
-  console.log(`Offer from pc1\n${desc.sdp}`);
+  const mungedOfferSdp = mungeSdp(desc.sdp, false);
+  const mungedAnswerSdp = mungeSdp(desc.sdp, true);
+  console.log(`Munged offer for pc1\n${mungedOfferSdp}`);
+  console.log(`Munged answer for pc2\n${mungedAnswerSdp}`);
   console.log('pc1 setLocalDescription start');
   try {
+    desc.sdp = mungedOfferSdp;
     await pc1.setLocalDescription(desc);
     onSetLocalSuccess(pc1);
   } catch (e) {
-    onSetSessionDescriptionError();
+    onSetSessionDescriptionError(e);
   }
 
   console.log('pc2 setRemoteDescription start');
   try {
+    desc.sdp = mungedAnswerSdp;
     await pc2.setRemoteDescription(desc);
     onSetRemoteSuccess(pc2);
   } catch (e) {
-    onSetSessionDescriptionError();
+    onSetSessionDescriptionError(e);
   }
 
   console.log('pc2 createAnswer start');
@@ -160,8 +166,46 @@ function gotRemoteStream(e) {
   }
 }
 
+function mungeSdp(sdp, isAnswer) {
+  let lines = sdp.split('\r\n');
+  let found;
+  let mType;
+  const h264Pts = [];
+  const opusPts = [];
+  lines.forEach(line => {
+    if (found = line.match(/^a=rtpmap:([0-9]+) opus/)) {
+      opusPts.push(found[1]);
+    }
+    if (found = line.match(new RegExp('^a=fmtp:([0-9]+) '+
+                '(?=.*profile-level-id=42e01f)(?=.*packetization-mode=1)'))) {
+      h264Pts.push(found[1]);
+    }
+  });
+  lines = lines.filter(line => {
+    if (found = line.match(/^m=(\S+) /)) {
+      mType = found[1];
+    }
+    if (found = line.match(/^a=(rtpmap|fmtp|rtcp-fb):([0-9]+) (.*)/)) {
+      if (mType === 'audio' && opusPts.indexOf(found[2]) < 0) {
+        return false;
+      }
+      if (mType === 'video' && h264Pts.indexOf(found[2]) < 0) {
+        return false;
+      }
+      if (found[3] === 'transport-cc') {
+        return false;
+      }
+    }
+    return true;
+  });
+  let newSdp = lines.join('\r\n');
+  return newSdp
+        .replace(/\r\nm=(audio|video).*\r\n/g, '$&b=TIAS:20000000\r\n')
+        .replace(/\r\na=extmap:.*draft-holmer-rmcat-transport-wide-cc-extensions-01/g, '');
+}
+
 async function onCreateAnswerSuccess(desc) {
-  console.log(`Answer from pc2:\n${desc.sdp}`);
+  console.log(`Offer from pc2 / Answer to pc1:\n${desc.sdp}`);
   console.log('pc2 setLocalDescription start');
   try {
     await pc2.setLocalDescription(desc);
