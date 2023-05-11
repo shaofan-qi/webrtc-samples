@@ -98,6 +98,7 @@ async function call() {
   localStream.getTracks().forEach(track => pc1.addTrack(track, localStream));
   console.log('Added local stream to pc1');
 
+  pc1.addTransceiver('video', {direction: 'recvonly'});
   try {
     console.log('pc1 createOffer start');
     const offer = await pc1.createOffer(offerOptions);
@@ -129,6 +130,7 @@ async function onCreateOfferSuccess(desc) {
     onSetSessionDescriptionError();
   }
 
+  pc2.getTransceivers()[2].direction = 'sendonly';
   console.log('pc2 createAnswer start');
   // Since the 'remote' side has no media stream we need
   // to pass in the right constraints in order for it to
@@ -161,6 +163,8 @@ function gotRemoteStream(e) {
 }
 
 async function onCreateAnswerSuccess(desc) {
+  // Remove transport-cc extension otherwise it will suppress REMB.
+  desc.sdp = desc.sdp.replace(/a=extmap:\d+ http:\/\/www.ietf.org\/id\/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\n/g, '');
   console.log(`Answer from pc2:\n${desc.sdp}`);
   console.log('pc2 setLocalDescription start');
   try {
@@ -176,6 +180,11 @@ async function onCreateAnswerSuccess(desc) {
   } catch (e) {
     onSetSessionDescriptionError(e);
   }
+  const sender = pc2.getTransceivers()[2].sender;
+  const senderParams = sender.getParameters();
+  console.log('pc2 RTP sender parameters of MID 2:', senderParams);
+  senderParams.encodings[0].active = false;
+  sender.setParameters(senderParams);
 }
 
 async function onIceCandidate(pc, event) {
