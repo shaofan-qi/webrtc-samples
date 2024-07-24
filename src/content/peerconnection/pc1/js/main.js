@@ -60,7 +60,7 @@ async function start() {
   console.log('Requesting local stream');
   startButton.disabled = true;
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({audio: true, video: true});
+    const stream = await navigator.mediaDevices.getUserMedia({audio: false, video: {width: 1280, height: 720, frameRate: 30}});
     console.log('Received local stream');
     localVideo.srcObject = stream;
     localStream = stream;
@@ -113,20 +113,24 @@ function onCreateSessionDescriptionError(error) {
 
 async function onCreateOfferSuccess(desc) {
   console.log(`Offer from pc1\n${desc.sdp}`);
+  const mungedSdp = mungeSdp(desc.sdp);
+  console.log(`Munged offer for pc1\n${mungedSdp}`);
   console.log('pc1 setLocalDescription start');
   try {
+    desc.sdp = mungedSdp;
     await pc1.setLocalDescription(desc);
     onSetLocalSuccess(pc1);
   } catch (e) {
-    onSetSessionDescriptionError();
+    onSetSessionDescriptionError(e);
   }
 
   console.log('pc2 setRemoteDescription start');
   try {
+    desc.sdp = mungedSdp;
     await pc2.setRemoteDescription(desc);
     onSetRemoteSuccess(pc2);
   } catch (e) {
-    onSetSessionDescriptionError();
+    onSetSessionDescriptionError(e);
   }
 
   console.log('pc2 createAnswer start');
@@ -160,6 +164,47 @@ function gotRemoteStream(e) {
   }
 }
 
+function mungeSdp(sdp) {
+  let lines = sdp.split('\r\n');
+  let found;
+  let mType;
+  const h264Pts = [];
+  const rtxPts = [];
+  const opusPts = [];
+  lines.forEach(line => {
+    if (found = line.match(/^a=rtpmap:(\d+) opus\//)) {
+      opusPts.push(found[1]);
+    }
+    if (found = line.match(/^a=rtpmap:(\d+) H264\//)) {
+      h264Pts.push(found[1]);
+    }
+    if (found = line.match(/^a=rtpmap:(\d+) rtx\//)) {
+      rtxPts.push(found[1]);
+    }
+    if (found = line.match(/^a=fmtp:(\d+) apt=(\d+)/)) {
+      const rtxPtIndex = rtxPts.indexOf(found[1]);
+      if (rtxPtIndex >= 0 && !h264Pts.includes(found[2])) {
+        rtxPts.splice(rtxPtIndex, 1);
+      }
+    }
+  });
+  lines = lines.filter(line => {
+    if (found = line.match(/^m=(\S+) /)) {
+      mType = found[1];
+    }
+    if (found = line.match(/^a=(rtpmap|fmtp|rtcp-fb):(\d+) (.*)/)) {
+      if (mType === 'audio') {
+        return opusPts.includes(found[2]);
+      }
+      if (mType === 'video') {
+        return h264Pts.includes(found[2]) || rtxPts.includes(found[2]);
+      }
+    }
+    return true;
+  });
+  return lines.join('\r\n');
+}
+
 async function onCreateAnswerSuccess(desc) {
   console.log(`Answer from pc2:\n${desc.sdp}`);
   console.log('pc2 setLocalDescription start');
@@ -176,6 +221,10 @@ async function onCreateAnswerSuccess(desc) {
   } catch (e) {
     onSetSessionDescriptionError(e);
   }
+  const sender = pc1.getSenders()[0];
+  const parameters = sender.getParameters();
+  parameters.degradationPreference = 'maintain-resolution';
+  await sender.setParameters(parameters);
 }
 
 async function onIceCandidate(pc, event) {
